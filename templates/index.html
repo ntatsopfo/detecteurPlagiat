@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Détecteur de Plagiat</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold text-center mb-8">Détecteur de Plagiat</h1>
+        
+        <!-- Barre de progression -->
+        <div id="loadingProgress" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+            <div class="bg-white p-8 rounded-lg flex flex-col items-center max-w-md w-full mx-4">
+                <div class="w-full bg-gray-200 rounded-full h-2.5 mb-4">
+                    <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" style="width: 0%"></div>
+                </div>
+                <p id="progressText" class="text-lg font-medium text-gray-700">Analyse en cours...</p>
+                <p id="progressDetails" class="text-sm text-gray-500 mt-2">Préparation des fichiers</p>
+            </div>
+        </div>
+
+        <!-- Error Alert -->
+        <div id="errorAlert" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 hidden">
+            <span id="errorMessage" class="block sm:inline"></span>
+            <span class="absolute top-0 bottom-0 right-0 px-4 py-3">
+                <svg class="fill-current h-6 w-6 text-red-500 cursor-pointer" role="button" onclick="hideError()"
+                     xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                    <title>Fermer</title>
+                    <path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/>
+                </svg>
+            </span>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <form id="uploadForm" class="space-y-4">
+                <div class="border-dashed border-2 border-gray-300 rounded-lg p-6 text-center" 
+                     id="dropZone">
+                    <input type="file" id="fileInput" multiple accept=".txt,.pdf,.doc,.docx" class="hidden">
+                    <label for="fileInput" class="cursor-pointer">
+                        <div class="text-gray-600">
+                            <p class="mb-2">Glissez-déposez vos fichiers ici</p>
+                            <p class="text-sm">ou cliquez pour sélectionner</p>
+                            <p class="text-xs mt-2">(.txt, .pdf, .doc, .docx)</p>
+                        </div>
+                    </label>
+                </div>
+                <div id="fileList" class="space-y-2"></div>
+                <button type="submit" class="w-full bg-blue-500 text-white py-2 px-4 rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-400" disabled>
+                    Analyser
+                </button>
+            </form>
+        </div>
+
+        <div id="results" class="hidden">
+            <div id="twoFilesResult" class="bg-white rounded-lg shadow-lg p-6 mb-8 hidden">
+                <h2 class="text-2xl font-semibold mb-4">Résultats de l'analyse</h2>
+                <div class="flex items-center justify-center mb-4">
+                    <div class="relative w-48 h-48">
+                        <canvas id="similarityChart"></canvas>
+                        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center">
+                            <span id="similarityPercentage" class="text-3xl font-bold"></span>
+                            <span class="block text-sm">de similarité</span>
+                        </div>
+                    </div>
+                </div>
+                <p id="similarityMessage" class="text-center text-lg mb-4"></p>
+                <div id="algorithmDetails" class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                    <div class="text-center p-4 bg-gray-50 rounded">
+                        <h3 class="font-semibold">Rabin-Karp</h3>
+                        <p id="rabinKarp" class="text-xl"></p>
+                    </div>
+                    <div class="text-center p-4 bg-gray-50 rounded">
+                        <h3 class="font-semibold">Levenshtein</h3>
+                        <p id="levenshtein" class="text-xl"></p>
+                    </div>
+                    <div class="text-center p-4 bg-gray-50 rounded">
+                        <h3 class="font-semibold">LCS</h3>
+                        <p id="lcs" class="text-xl"></p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="multiFilesResult" class="bg-white rounded-lg shadow-lg p-6 hidden">
+                <h2 class="text-2xl font-semibold mb-4">Matrice de similarité</h2>
+                <div id="heatmap" class="w-full overflow-x-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const form = document.getElementById('uploadForm');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const results = document.getElementById('results');
+        const twoFilesResult = document.getElementById('twoFilesResult');
+        const multiFilesResult = document.getElementById('multiFilesResult');
+        const submitButton = form.querySelector('button[type="submit"]');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const errorAlert = document.getElementById('errorAlert');
+        const errorMessage = document.getElementById('errorMessage');
+        const dropZone = document.getElementById('dropZone');
+        const loadingProgress = document.getElementById('loadingProgress');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const progressDetails = document.getElementById('progressDetails');
+    
+        // Ajout des styles pour le tooltip
+        const style = document.createElement('style');
+        style.textContent = `
+            .tooltip {
+                font-size: 12px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                z-index: 1000;
+            }
+        `;
+        document.head.appendChild(style);
+    
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorAlert.classList.remove('hidden');
+        }
+    
+        window.hideError = function() {
+            errorAlert.classList.add('hidden');
+        }
+    
+        // Gestion du drag & drop
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    
+        function highlight(e) {
+            dropZone.classList.add('border-blue-500');
+            dropZone.classList.add('bg-blue-50');
+        }
+    
+        function unhighlight(e) {
+            dropZone.classList.remove('border-blue-500');
+            dropZone.classList.remove('bg-blue-50');
+        }
+    
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults);
+        });
+    
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight);
+        });
+    
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight);
+        });
+    
+        dropZone.addEventListener('drop', function(e) {
+            const dt = e.dataTransfer;
+            if (dt.files.length) {
+                handleFiles(dt.files);
+            }
+        });
+    
+        let selectedFiles = [];
+        
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+    
+        function handleFiles(files) {
+            selectedFiles = [...selectedFiles, ...Array.from(files)];
+            updateFileList();
+        }
+    
+        window.removeFile = function(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+        }
+    
+        function updateFileList() {
+            fileList.innerHTML = '';
+            submitButton.disabled = selectedFiles.length < 2;
+            
+            selectedFiles.forEach((file, index) => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between bg-gray-50 p-2 rounded';
+                div.innerHTML = `
+                    <div class="flex items-center space-x-2">
+                        <span class="text-sm">${file.name}</span>
+                        <span class="text-xs text-gray-500">(${(file.size / 1024).toFixed(1)} KB)</span>
+                    </div>
+                    <button type="button" class="text-red-500 hover:text-red-700" onclick="removeFile(${index})">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                `;
+                fileList.appendChild(div);
+            });
+        }
+
+        function updateProgress(percent, message) {
+            progressBar.style.width = `${percent}%`;
+            progressDetails.textContent = message;
+        }
+    
+        form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        hideError();
+        loadingProgress.classList.remove('hidden');
+        results.classList.add('hidden');
+        
+        updateProgress(0, "Préparation des fichiers...");
+        
+        const formData = new FormData();
+        Array.from(selectedFiles).forEach(file => {
+            formData.append('files[]', file);
+        });
+
+        try {
+            updateProgress(30, "Envoi des fichiers...");
+            const response = await fetch('/compare', {
+                method: 'POST',
+                body: formData
+            });
+
+            updateProgress(60, "Analyse en cours...");
+            const data = await response.json();
+            
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            
+            updateProgress(90, "Génération des résultats...");
+            results.classList.remove('hidden');
+            
+            if (selectedFiles.length === 2) {
+                displayTwoFilesResult(data);
+            } else {
+                displayMultiFilesResult(data);
+            }
+
+            updateProgress(100, "Analyse terminée !");
+            setTimeout(() => {
+                loadingProgress.classList.add('hidden');
+            }, 500);
+
+        } catch (error) {
+            showError(error.message || "Une erreur est survenue lors de l'analyse");
+        } finally {
+            setTimeout(() => {
+                loadingProgress.classList.add('hidden');
+            }, 500);
+        }
+    });
+    
+        function displayTwoFilesResult(data) {
+            twoFilesResult.classList.remove('hidden');
+            multiFilesResult.classList.add('hidden');
+    
+            document.getElementById('similarityPercentage').textContent = `${data.similarity}%`;
+            document.getElementById('similarityMessage').textContent = data.message;
+            document.getElementById('rabinKarp').textContent = `${data.details.rabin_karp}%`;
+            document.getElementById('levenshtein').textContent = `${data.details.levenshtein}%`;
+            document.getElementById('lcs').textContent = `${data.details.lcs}%`;
+    
+            const ctx = document.getElementById('similarityChart').getContext('2d');
+            if (window.similarityChartInstance) {
+                window.similarityChartInstance.destroy();
+            }
+            window.similarityChartInstance = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    datasets: [{
+                        data: [data.similarity, 100 - data.similarity],
+                        backgroundColor: [
+                            `hsl(${120 - data.similarity * 1.2}, 70%, 50%)`,
+                            '#f3f4f6'
+                        ]
+                    }]
+                },
+                options: {
+                    cutout: '80%',
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+    
+        function displayMultiFilesResult(data) {
+            twoFilesResult.classList.add('hidden');
+            multiFilesResult.classList.remove('hidden');
+    
+            const minCellSize = 40;
+            const numberOfFiles = data.filenames.length;
+            const desiredSize = Math.max(numberOfFiles * minCellSize, 300);
+    
+            const margin = { 
+                top: 50, 
+                right: 50, 
+                bottom: Math.max(100, numberOfFiles * 8),
+                left: Math.max(100, numberOfFiles * 8)
+            };
+            
+            const containerWidth = document.getElementById('multiFilesResult').offsetWidth;
+            const width = Math.min(desiredSize, containerWidth - margin.left - margin.right);
+            const height = width;
+    
+            d3.select("#heatmap").html("");
+    
+            const svg = d3.select("#heatmap")
+                .append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+                .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+    
+            const x = d3.scaleBand()
+                .range([0, width])
+                .domain(data.filenames)
+                .padding(0.05);
+    
+            const y = d3.scaleBand()
+                .range([height, 0])
+                .domain(data.filenames)
+                .padding(0.05);
+    
+            const color = d3.scaleSequential()
+                .interpolator(d3.interpolateRdYlBu)
+                .domain([100, 0]);
+    
+            // Axe X
+            svg.append("g")
+                .attr("transform", `translate(0,${height})`)
+                .call(d3.axisBottom(x))
+                .selectAll("text")
+                .attr("transform", `rotate(-45) translate(-${x.bandwidth()/2},-10)`)
+                .style("text-anchor", "end")
+                .style("font-size", `${Math.min(12, width/numberOfFiles/2)}px`)
+                .text(d => d.length > 15 ? d.substring(0, 12) + '...' : d);
+    
+            // Axe Y
+            svg.append("g")
+                .call(d3.axisLeft(y))
+                .selectAll("text")
+                .style("text-anchor", "end")
+                .style("font-size", `${Math.min(12, height/numberOfFiles/2)}px`)
+                .text(d => d.length > 15 ? d.substring(0, 12) + '...' : d);
+    
+            // Tooltip
+            const tooltip = d3.select("body").append("div")
+                .attr("class", "tooltip")
+                .style("opacity", 0)
+                .style("position", "absolute")
+                .style("background-color", "white")
+                .style("border", "1px solid #ddd")
+                .style("border-radius", "4px")
+                .style("padding", "10px")
+                .style("pointer-events", "none");
+    
+            // Cellules
+            svg.selectAll("rect")
+                .data(data.matrix.flatMap((row, i) => 
+                    row.map((value, j) => ({value, i, j}))
+                ))
+                .enter()
+                .append("rect")
+                .attr("x", d => x(data.filenames[d.j]))
+                .attr("y", d => y(data.filenames[d.i]))
+                .attr("width", x.bandwidth())
+                .attr("height", y.bandwidth())
+                .style("fill", d => color(d.value))
+                .style("stroke", "white")
+                .style("stroke-width", 0.5)
+                .on("mouseover", function(event, d) {
+                    d3.select(this)
+                        .style("stroke", "black")
+                        .style("stroke-width", 2);
+                        
+                    tooltip.transition()
+                        .duration(200)
+                        .style("opacity", .9);
+                        
+                    tooltip.html(`
+                        <strong>Fichiers comparés :</strong><br>
+                        ${data.filenames[d.i]}<br>
+                        ${data.filenames[d.j]}<br>
+                        <strong>Similarité :</strong> ${d.value.toFixed(1)}%
+                    `)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", function() {
+                    d3.select(this)
+                        .style("stroke", "white")
+                        .style("stroke-width", 0.5);
+                        
+                    tooltip.transition()
+                        .duration(500)
+                        .style("opacity", 0);
+                });
+    
+            // Légende
+            const legendWidth = 20;
+            const legendHeight = height / 2;
+            
+            const legendScale = d3.scaleSequential()
+                .interpolator(d3.interpolateRdYlBu)
+                .domain([100, 0]);
+                
+            const legendAxis = d3.axisRight()
+                .scale(d3.scaleLinear().domain([0, 100]).range([legendHeight, 0]))
+                .ticks(10);
+    
+            const legend = svg.append("g")
+                .attr("transform", `translate(${width + 20}, ${(height - legendHeight) / 2})`);
+    
+            legend.append("defs")
+                .append("linearGradient")
+                .attr("id", "legend-gradient")
+                .attr("x1", "0%")
+                .attr("y1", "0%")
+                .attr("x2", "0%")
+                .attr("y2", "100%")
+                .selectAll("stop")
+                .data(d3.range(0, 1.1, 0.1))
+                .enter()
+                .append("stop")
+                .attr("offset", d => d * 100 + "%")
+                .attr("stop-color", d => legendScale(d * 100));
+    
+            legend.append("rect")
+                .attr("width", legendWidth)
+                .attr("height", legendHeight)
+                .style("fill", "url(#legend-gradient)");
+    
+            legend.append("g")
+                .attr("transform", `translate(${legendWidth}, 0)`)
+                .call(legendAxis)
+                .append("text")
+                .attr("transform", "rotate(-90)")
+                .attr("y", 30)
+                .attr("x", -legendHeight/2)
+                .attr("dy", ".71em")
+                .style("text-anchor", "middle")
+                .text("Similarité (%)");
+        }
+    });
+    </script>
+</body>
+</html>
